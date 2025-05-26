@@ -6,6 +6,8 @@
 #include"tcpsocket.h"
 #include<thread>
 #include<vector>
+#include <mutex>
+static mutex mtx;
 using namespace cv;
 using namespace std;
 template<typename T> class Juzhen;
@@ -33,11 +35,15 @@ public:
 	}
 	~Juzhen()
 	{
-		for (int i = 0; i < hang; i++)
+		if (locate != NULL)
 		{
-			delete[] locate[i];
+			for (int i = 0; i < hang; i++)
+			{
+				delete[] locate[i];
+			}
+			delete[] locate;
+			locate = NULL;
 		}
-		delete[] locate;
 	}
 	Juzhen operator+(const Juzhen<T>& a)const
 	{
@@ -88,6 +94,7 @@ public:
 	}
 	Juzhen<T>& operator=(const Juzhen<T>& a)
 	{
+		if (this == &a) return *this;
 		for (int i = 0; i < hang; i++)
 		{
 			delete[] locate[i];
@@ -126,8 +133,9 @@ void thread_task(const Juzhen<T>& a,const Juzhen<T>& b,Juzhen<T>& c,int start_ro
 	{
 		for (int k = 0; k <b.lie ; k++) 
 		{
-			for (int j = 0; j < b.hang; ++j) 
+			for (int j = 0; j <a.lie; ++j) 
 			{
+				lock_guard<mutex> lock(mtx);
 				c.locate[i][k] += a.locate[i][j] * b.locate[j][k];
 			}
 		}
@@ -139,10 +147,10 @@ void thread_fun(const Juzhen<T>& a, const Juzhen<T>& b, Juzhen<T>& c)
 	const int THREAD_COUNT = max(1, thread::hardware_concurrency() / 2);
 	vector<thread> threads;
 	int rows_per_thread = a.hang / THREAD_COUNT;
-	for (int t = 0; t < 4; t++)
+	for (int t = 0; t < THREAD_COUNT; t++)
 	{
 		int start = t * rows_per_thread;
-		int end = (t == 3) ? a.hang : start + rows_per_thread;
+		int end = (t == THREAD_COUNT-1) ? a.hang : start + rows_per_thread;
 		threads.emplace_back([&a, &b, &c, start, end] {thread_task(a, b, c, start, end);});
 	}
 	for (auto& t : threads) 
@@ -192,14 +200,39 @@ public:
 	model(const string& path)
 	{
 		 w1 = read<float>(path + "/fc1.weight", 784, 500);
+		 if (w1.hang == 0 || w1.lie == 0) 
+		 {
+			 cerr << "模型加载失败" << endl;
+			 return ;
+		 }
 		 b1 = read<float>(path + "/fc1.bias", 1, 500);
+		 if (b1.hang == 0 || b1.lie == 0)
+		 {
+			 cerr << "模型加载失败" << endl;
+			 return ;
+		 }
 		 w2 = read<float>(path + "/fc2.weight", 500, 10);
+		 if (w2.hang == 0 || w2.lie == 0) 
+		 {
+			 cerr << "模型加载失败" << endl;
+			 return ;
+		 }
 		 b2 = read<float>(path + "/fc2.bias", 1, 10);
+		 if (b2.hang == 0 || b2.lie == 0) 
+		 {
+			 cerr << "模型加载失败" << endl;
+			 return ;
+		 }
 	}
 	Juzhen<T> forward(const Juzhen<T>& x) const
 	{
 		Juzhen<T> y = relu(x * w1 + b1);
 		Juzhen<T> final = softmax(y * w2 + b2);
+		if (final.hang == 0 || final.lie == 0)
+		{
+			cerr << "模型输出异常" << endl;
+			return Juzhen<T>(1, 1);  
+		}
 		return final;
 	}
 };
@@ -361,9 +394,13 @@ int main()
 			err("receive  361");
 		}
 		total_received += ret;
+		if (total_received < data.size()) 
+		{
+			cerr << "接收数据不完整，仅收到" << total_received << "字节" << endl;
+			return 1;
+		}
 	}
 	Juzhen<float> input = buildjuzhen(data.data(), hang, lie);
-	
 	auto model_ptr = create_model<float>("C:\\Users\\Aaron\\Desktop\\GKD-Software-2025-Test-main\\mnist-fc");
 	Juzhen<float> final = model_ptr->forward(input);
 	vector<float> output_data = sendjuzhen(final);
@@ -385,7 +422,7 @@ int main()
 		int ret = send(clifd, reinterpret_cast<char*>(&output_lie) + sent_bytes, sizeof(output_lie) - sent_bytes, 0);
 		if (ret <= 0)
 		{
-			err("send  389");
+			err("send 389");
 		}
 		sent_bytes += ret;
 	}
@@ -396,19 +433,12 @@ int main()
 		if (ret <= 0)
 		{
 			err("send data");
+			return 1;
 		}
 		sent_bytes += ret;
 	}
 	cout << "已发送矩阵数据" << endl;
-	int max = 0;
-	for (int i = 1; i < 10; i++)
-	{
-		if (final.locate[0][max] < final.locate[0][i])
-		{
-			max = i;
-		}
-	}
-	cout << max << endl;
+	
 	closesocket(serfd);
 	closesocket(clifd);
 	close_socket();
