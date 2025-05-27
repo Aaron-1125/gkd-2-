@@ -171,14 +171,16 @@ Juzhen<T> buildjuzhen(const T* data, int hang, int lie)
 	return m;
 }
 template<typename T>
-T* sendjuzhen(const Juzhen<T>& m)
+T* sendjuzhen(const Juzhen<T>& m) 
 {
 	T* data = new T[m.hang * m.lie];
-	for (int i = 0; i < m.hang; ++i)
+	for (int i = 0; i < m.hang; i++) 
 	{
-		for (int j = 0; j < m.lie; ++j)
+		for (int j = 0; j < m.lie; j++) 
 		{
-			data[i * m.lie + j] = m.locate[i][j];
+			int index = i * m.lie + j;
+			uint32_t net_val = htonl(*reinterpret_cast<uint32_t*>(&m.locate[i][j]));
+			memcpy(&data[index], &net_val, sizeof(net_val));
 		}
 	}
 	return data;
@@ -205,63 +207,94 @@ Juzhen<T> readimg(string path)
 	}
 	return m;
 }
+void cleanup(SOCKET serfd, SOCKET clifd) 
+{
+	closesocket(clifd);
+	closesocket(serfd);
+	WSACleanup();
+}
 int main()
 {
 	init_socket();
 	SOCKET fd=creatclientsocket();
-	Juzhen<float> convert = readimg<float>("1.png");
+	Juzhen<float> convert = readimg<float>("8.png");
 	cout << convert.hang << " " << convert.lie << endl;
+	cout<< "---------start------------" << endl;
+	
 	float* data= sendjuzhen(convert);
 	int arr[2] = {htonl(convert.hang), htonl(convert.lie)};
-	if (SOCKET_ERROR == send(fd, reinterpret_cast<char*>(arr), sizeof(arr), 0))
+	int arr_size = sizeof(arr);
+	int sent = 0;
+	while (sent < arr_size) 
 	{
-		err("send arr");
+		int ret = send(fd, (char*)arr + sent, arr_size - sent, 0);
+		if (ret <= 0) 
+		{
+			err("send arr");
+			break;
+		}
+		sent += ret;
 	}
-	if (SOCKET_ERROR == send(fd, reinterpret_cast<char*>(data), convert.hang * convert.lie*sizeof(*data), 0))
+	int data_size = convert.hang * convert.lie * sizeof(float);
+	sent = 0;
+	while (sent < data_size)
 	{
-		err("send");
+		int ret = send(fd, (char*)data + sent, data_size - sent, 0);
+		if (ret <= 0)
+		{
+			err("send data");
+			break;
+		}
+		sent += ret;
 	}
+	
 	delete[] data;
-	cout << "开始接受" << endl;
-	int output_hang = 0, output_lie = 0;
+	cout << "开始接收" << endl;
+	int hang = 0, lie = 0;
 	int recv_bytes = 0;
-	while (recv_bytes < sizeof(output_hang))
+	while (recv_bytes < sizeof(hang))
 	{
-		int ret = recv(fd, reinterpret_cast<char*>(&output_hang) + recv_bytes,sizeof(output_hang) - recv_bytes, 0);
+		int ret = recv(fd, reinterpret_cast<char*>(&hang) + recv_bytes, sizeof(hang) - recv_bytes, 0);
 		if (ret <= 0)
 		{
-			err("接收输出行数失败");
+			err("receive " + __LINE__);
 		}
 		recv_bytes += ret;
 	}
-	output_hang = ntohl(output_hang);
-
+	hang = ntohl(hang);
 	recv_bytes = 0;
-	while (recv_bytes < sizeof(output_lie))
+	while (recv_bytes < sizeof(lie))
 	{
-		int ret = recv(fd, reinterpret_cast<char*>(&output_lie) + recv_bytes,sizeof(output_lie) - recv_bytes, 0);
+		int ret = recv(fd, reinterpret_cast<char*>(&lie) + recv_bytes, sizeof(lie) - recv_bytes, 0);
 		if (ret <= 0)
 		{
-			err("接收输出列数失败");
+			err("receive " + __LINE__);
 		}
 		recv_bytes += ret;
 	}
-	cout << "1" << endl;
-	output_lie = ntohl(output_lie);
-	vector<float> output_data(output_hang * output_lie);
+	lie = ntohl(lie);
+	cout << "接收矩阵维度: " << hang << "*" << lie << endl;
+	vector<float> sentdata(hang * lie);
 	int total_received = 0;
-	while (total_received < output_data.size())
+	while (total_received < sentdata.size()*sizeof(float))
 	{
-		int ret = recv(fd, reinterpret_cast<char*>(output_data.data()) + total_received,output_data.size() - total_received, 0);
+		int ret = recv(fd, reinterpret_cast<char*>(sentdata.data()) + total_received,sentdata.size() * sizeof(float) - total_received, 0);
 		if (ret <= 0)
 		{
-			err("接收矩阵数据失败");
+			err("recv data");
 		}
 		total_received += ret;
 	}
-	
-	cout<<"接收矩阵维度: " << output_hang << "*" << output_lie << endl;
-	Juzhen<float> final = buildjuzhen<float>(output_data.data(), output_hang, output_lie);
+	for (int i = 0; i < sentdata.size(); i++) 
+	{
+		uint32_t net_val;
+		memcpy(&net_val, &sentdata[i], sizeof(net_val));
+		float local_val;
+		*reinterpret_cast<uint32_t*>(&local_val) = ntohl(net_val);
+		sentdata[i] = local_val;
+	}
+	Juzhen<float> final = buildjuzhen<float>(sentdata.data(), hang, lie);
+	final.bianli();
 	int max = 0;
 	for (int i = 1; i < 10; i++)
 	{
@@ -272,7 +305,6 @@ int main()
 	}
 	cout << "最有可能的数字是"<< max << endl;
 	cout << "---------end------------" << endl;
-	
-	
+	getchar();
 	close_socket();
 }

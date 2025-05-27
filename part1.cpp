@@ -7,7 +7,7 @@
 #include<thread>
 #include<vector>
 #include <mutex>
-static mutex mtx;
+#include"string"
 using namespace cv;
 using namespace std;
 template<typename T> class Juzhen;
@@ -125,6 +125,7 @@ public:
 		}
 	}
 };
+static mutex mtx;
 template<typename T>
 void thread_task(const Juzhen<T>& a,const Juzhen<T>& b,Juzhen<T>& c,int start_row,int end_row) 
 {
@@ -159,27 +160,34 @@ void thread_fun(const Juzhen<T>& a, const Juzhen<T>& b, Juzhen<T>& c)
 	}
 }
 template<typename T>
-Juzhen<T> read(const string& filename, int hang, int lie)
+void readfile(const string& filename, int hang, int lie,Juzhen<T>& final)
 {
-	ifstream file(filename, ios::binary);
+	
+	ifstream file(filename, ios::binary|ios::in);
 	if (!file)
 	{
 		cout << "打开失败" << endl;
 		file.close();
-		return Juzhen<T>(0, 0);
+		final = Juzhen<T>(0, 0);
 	}
-	Juzhen<T> temp(hang, lie);
+	
+	final.hang = hang;
+	final.lie = lie;
+	final.locate = new T * [hang];
+	for (int i = 0; i < hang; i++)
+	{
+		final.locate[i] = new T[lie]();
+	}
 	for (int i = 0; i < hang; i++)
 	{
 		for (int j = 0; j < lie; j++)
 		{
 			T temp_num;
-			file.read(reinterpret_cast<char*>(&temp_num), sizeof(float));
-			temp.locate[i][j] = temp_num;
+			file.read(reinterpret_cast<char*>(&temp_num), sizeof(T));
+			final.locate[i][j] = temp_num;
 		}
 	}
 	file.close();
-	return temp;
 }
 template<typename T>
 class model_father 
@@ -199,30 +207,33 @@ public:
 	Juzhen<T> b2;
 	model(const string& path)
 	{
-		 w1 = read<float>(path + "/fc1.weight", 784, 500);
+		
+		readfile<float>(path + "fc1.weight", 784, 500 , w1);
+		
 		 if (w1.hang == 0 || w1.lie == 0) 
 		 {
 			 cerr << "模型加载失败" << endl;
-			 return ;
+			 exit(EXIT_FAILURE);
 		 }
-		 b1 = read<float>(path + "/fc1.bias", 1, 500);
+		readfile<float>(path + "fc1.bias", 1, 500,b1);
 		 if (b1.hang == 0 || b1.lie == 0)
 		 {
 			 cerr << "模型加载失败" << endl;
-			 return ;
+			 exit(EXIT_FAILURE);
 		 }
-		 w2 = read<float>(path + "/fc2.weight", 500, 10);
+		readfile<float>(path + "fc2.weight", 500, 10,w2);
 		 if (w2.hang == 0 || w2.lie == 0) 
 		 {
 			 cerr << "模型加载失败" << endl;
-			 return ;
+			 exit(EXIT_FAILURE);
 		 }
-		 b2 = read<float>(path + "/fc2.bias", 1, 10);
+		readfile<float>(path + "fc2.bias", 1, 10,b2);
 		 if (b2.hang == 0 || b2.lie == 0) 
 		 {
 			 cerr << "模型加载失败" << endl;
-			 return ;
+			 exit(EXIT_FAILURE);
 		 }
+		
 	}
 	Juzhen<T> forward(const Juzhen<T>& x) const
 	{
@@ -242,39 +253,46 @@ model_father<T>* create_model(const string& path)
 	return new model<T>(path);
 }
 template <typename T>
-Juzhen<T> buildjuzhen(const T* data, int hang, int lie)
+void buildjuzhen(const T* data, int hang, int lie,Juzhen<T>& input )
 {
-	Juzhen<T> m(hang, lie);
+	input.hang = hang;
+	input.lie = lie;
+	input.locate = new T* [hang];
+	for (int i = 0; i < hang; i++) 
+	{
+		input.locate[i] = new T[lie]();
+	}
 	for (int i = 0; i < hang; i++)
 	{
 		for (int j = 0; j < lie; j++) 
 		{
-			m.locate[i][j] = data[i * lie + j];
+			input.locate[i][j] = data[i * lie + j];
 		}
 	}
-	return m;
+	
 }
 template <typename T>
-vector<T> sendjuzhen(const Juzhen<T>& m)
+T* sendjuzhen(const Juzhen<T>& m) 
 {
-	vector<T> data(m.hang * m.lie);
-	for (int i = 0; i < m.hang; ++i) 
+	T* data = new T[m.hang * m.lie];
+	for (int i = 0; i < m.hang; i++) 
 	{
-		for (int j = 0; j < m.lie; ++j) 
+		for (int j = 0; j < m.lie; j++) 
 		{
-			data[i * m.lie + j] = m.locate[i][j];
+			int index = i * m.lie + j;
+			uint32_t net_val = htonl(*reinterpret_cast<uint32_t*>(&m.locate[i][j]));
+			memcpy(&data[index], &net_val, sizeof(net_val));
 		}
 	}
 	return data;
-}
-template <typename T>
+}template <typename T>
 Juzhen<T> readimg(string path) 
 {
 	Mat image = imread(path, IMREAD_GRAYSCALE);
 	if (image.empty()) 
 	{
 		cout << "读取图片失败" << endl;
-		return Juzhen(0, 0);
+		return Juzhen<T>(0, 0);
 	}
 	Mat resize_image;
 	resize(image, resize_image, Size(28, 28), 0, 0, INTER_AREA);
@@ -337,7 +355,13 @@ Juzhen<T> softmax(const Juzhen<T>& a)
 	cout << "输入格式不符" << endl;
 	return Juzhen<T>(0, 0);
 }
-int main() 
+void cleanup(SOCKET serfd, SOCKET clifd) 
+{
+	closesocket(clifd);
+	closesocket(serfd);
+	WSACleanup();
+}
+int main()
 {
 
 	if (!init_socket())
@@ -345,103 +369,151 @@ int main()
 		return 1;
 	}
 	SOCKET serfd = creatservesocket();
-	if (serfd == INVALID_SOCKET) 
+	if (serfd == INVALID_SOCKET)
 	{
 		close_socket();
 		return 1;
 	}
 	cout << "Wait for connecting..." << endl;
 	SOCKET clifd = accept(serfd, NULL, NULL);
-	if (clifd == INVALID_SOCKET) 
+	if (clifd == INVALID_SOCKET)
 	{
 		err("accept");
 		closesocket(serfd);
 		close_socket();
 		return 1;
 	}
+	cout << "开始接受矩阵数据" << endl;
 	int hang = 0, lie = 0;
 	int recv_bytes = 0;
-	while (recv_bytes < sizeof(hang)) 
+	while (recv_bytes < sizeof(hang))
 	{
-		int ret = recv(clifd, reinterpret_cast<char*>(&hang) + recv_bytes,sizeof(hang) - recv_bytes, 0);
+		int ret = recv(clifd, reinterpret_cast<char*>(&hang) + recv_bytes, sizeof(hang) - recv_bytes, 0);
 		if (ret <= 0)
 		{
-			err("receive  336");
+			err("recv data");
+		}
+		if (ret == SOCKET_ERROR)
+		{
+			
+			int err_code = WSAGetLastError();
+			if (err_code == WSAECONNRESET)
+			{
+				cerr << "连接被对方重置！" << endl;
+				cleanup(serfd, clifd);
+				return 1;
+			}
+			
 		}
 		recv_bytes += ret;
 	}
-	hang = ntohl(hang);  
+	hang = ntohl(hang);
 	recv_bytes = 0;
-	while (recv_bytes < sizeof(lie)) 
+	while (recv_bytes < sizeof(lie))
 	{
-		int ret = recv(clifd, reinterpret_cast<char*>(&lie) + recv_bytes,sizeof(lie) - recv_bytes, 0);
+		int ret = recv(clifd, reinterpret_cast<char*>(&lie) + recv_bytes, sizeof(lie) - recv_bytes, 0);
 		if (ret <= 0)
 		{
-			err("receive  347");
+			err("recv data");
+		}
+		if (ret == SOCKET_ERROR)
+		{
+			
+			int err_code = WSAGetLastError();
+			if (err_code == WSAECONNRESET)
+			{
+				cerr << "连接被对方重置！" << endl;
+				cleanup(serfd, clifd);
+				return 1;
+			}
+			
 		}
 		recv_bytes += ret;
 	}
 	lie = ntohl(lie);
 	cout << "接收矩阵维度: " << hang << "*" << lie << endl;
-
-	vector<float> data(hang*lie);
+	vector<float> data(hang * lie);
+	fill(data.begin(), data.end(), 0.0f);
 	int total_received = 0;
-	while (total_received < data.size())
+	while (total_received < data.size()*sizeof(float))
 	{
-		int ret = recv(clifd, reinterpret_cast<char*>(data.data()) + total_received, data.size() - total_received, 0);
+		int ret = recv(clifd, reinterpret_cast<char*>(data.data()) + total_received, data.size() * sizeof(float) - total_received, 0);
 		if (ret <= 0)
 		{
-			err("receive  361");
+			err("recv data");
+			break;
+		}
+		if (ret == SOCKET_ERROR)
+		{
+			
+			int err_code = WSAGetLastError();
+			if (err_code == WSAECONNRESET)
+			{
+				cerr << "连接被对方重置！" << endl;
+				cleanup(serfd, clifd);
+				return 1;
+			}
+			
 		}
 		total_received += ret;
-		if (total_received < data.size()) 
-		{
-			cerr << "接收数据不完整，仅收到" << total_received << "字节" << endl;
-			return 1;
-		}
 	}
-	Juzhen<float> input = buildjuzhen(data.data(), hang, lie);
-	auto model_ptr = create_model<float>("C:\\Users\\Aaron\\Desktop\\GKD-Software-2025-Test-main\\mnist-fc");
-	Juzhen<float> final = model_ptr->forward(input);
-	vector<float> output_data = sendjuzhen(final);
-	int output_hang = htonl(final.hang);
-	int output_lie = htonl(final.lie);
-	int sent_bytes = 0;
-	while (sent_bytes < sizeof(output_hang)) 
+	if (total_received != data.size() * sizeof(float)) 
 	{
-		int ret = send(clifd, reinterpret_cast<char*>(&output_hang) + sent_bytes, sizeof(output_hang) - sent_bytes, 0);
-		if (ret <= 0)
-		{
-			err("send 214");
-		}
-		sent_bytes += ret;
-	}
-	sent_bytes = 0;
-	while (sent_bytes < sizeof(output_lie))
-	{
-		int ret = send(clifd, reinterpret_cast<char*>(&output_lie) + sent_bytes, sizeof(output_lie) - sent_bytes, 0);
-		if (ret <= 0)
-		{
-			err("send 389");
-		}
-		sent_bytes += ret;
-	}
-	sent_bytes = 0;
-	while (sent_bytes < output_data.size() * sizeof(float)) 
-	{
-		int ret = send(clifd, reinterpret_cast<char*>(output_data.data()) + sent_bytes, output_data.size() * sizeof(float) - sent_bytes, 0);
-		if (ret <= 0)
-		{
-			err("send data");
-			return 1;
-		}
-		sent_bytes += ret;
-	}
-	cout << "已发送矩阵数据" << endl;
+		cerr << "错误：预期接收 " << data.size() * sizeof(float)
+			<< " 字节，实际接收 " << total_received << " 字节" << endl;
 	
-	closesocket(serfd);
-	closesocket(clifd);
-	close_socket();
-	return 0;
-}
+	}
+	for (int i = 0; i < data.size(); i++) 
+	{
+		uint32_t net_val;
+		memcpy(&net_val, &data[i], sizeof(net_val));
+		float local_val;
+		*reinterpret_cast<uint32_t*>(&local_val) = ntohl(net_val); 
+		data[i] = local_val;
+	}
+		cout << "接收矩阵数据成功" << endl;
+		Juzhen<float> input;
+		buildjuzhen(data.data(), hang, lie,input);
+		model_father<float>* model_ptr = create_model<float>("C:\\Users\\Aaron\\Desktop\\GKD-Software-2025-Test-main\\mnist-fc\\");
+		if (model_ptr == nullptr)
+		{
+			cerr << "模型加载失败" << endl;
+			closesocket(serfd);
+			closesocket(clifd);
+			close_socket();
+			return 1;
+		}
+		Juzhen<float> final = model_ptr->forward(input);
+		float* senddata = sendjuzhen(final);
+		int arr[2] = { htonl(final.hang), htonl(final.lie) };
+		int arr_size = sizeof(arr);
+		int sent = 0;
+		while (sent < arr_size) 
+		{
+			int ret = send(clifd, (char*)arr + sent, arr_size - sent, 0);
+			if (ret <= 0) 
+			{
+				err("send arr");
+				break;
+			}
+			sent += ret;
+		}
+		int data_size = final.hang * final.lie * sizeof(float);
+		sent = 0;
+		while (sent < data_size) {
+			int ret = send(clifd, (char*)senddata + sent, data_size - sent, 0);
+			if (ret <= 0) {
+				err("send data");
+				break;
+			}
+			sent += ret;
+		}
+		delete[] senddata;
+		cout << "已发送矩阵数据" << endl;
+		closesocket(serfd);
+		closesocket(clifd);
+		close_socket();
+		return 0;
+	}
+
 
